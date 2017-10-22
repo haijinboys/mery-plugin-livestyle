@@ -2,9 +2,9 @@ object PropForm: TPropForm
   Left = 0
   Top = 0
   BorderStyle = bsDialog
-  Caption = #12497#12483#12481#12398#36969#29992
-  ClientHeight = 297
-  ClientWidth = 449
+  Caption = 'LiveStyle'
+  ClientHeight = 137
+  ClientWidth = 257
   Color = clBtnFace
   Font.Charset = DEFAULT_CHARSET
   Font.Color = clWindowText
@@ -12,52 +12,56 @@ object PropForm: TPropForm
   Font.Name = 'Tahoma'
   Font.Style = []
   OldCreateOrder = False
-  Position = poScreenCenter
   OnClose = FormClose
   OnCreate = FormCreate
   OnDestroy = FormDestroy
   OnShow = FormShow
   PixelsPerInch = 96
   TextHeight = 13
+  object PortLabel: TLabel
+    Left = 8
+    Top = 12
+    Width = 46
+    Height = 13
+    Caption = #12509#12540#12488'(&P):'
+  end
   object Bevel: TBevel
     Left = 0
-    Top = 256
-    Width = 449
+    Top = 96
+    Width = 257
     Height = 9
     Shape = bsTopLine
   end
-  object ListView: TListView
-    Left = 8
+  object PortSpinEdit: TSpinEditEx
+    Left = 64
     Top = 8
-    Width = 433
-    Height = 241
-    Columns = <
-      item
-        Caption = #12501#12449#12452#12523#21517
-        Width = 160
-      end
-      item
-        Caption = #12475#12524#12463#12479
-        Width = 80
-      end
-      item
-        Caption = #12477#12540#12473
-        Width = 160
-      end>
-    ColumnClick = False
-    HideSelection = False
-    OwnerData = True
-    ReadOnly = True
-    RowSelect = True
+    Width = 65
+    Height = 22
+    MaxLength = 5
+    MaxValue = 65535
+    MinValue = 1024
     TabOrder = 2
-    ViewStyle = vsReport
-    OnClick = ListViewClick
-    OnData = ListViewData
-    OnSelectItem = ListViewSelectItem
+    Value = 1024
+  end
+  object DebugCheckBox: TCheckBox
+    Left = 8
+    Top = 40
+    Width = 241
+    Height = 17
+    Caption = #12487#12496#12483#12464'(&D)'
+    TabOrder = 3
+  end
+  object SendUnsavedChangesCheckBox: TCheckBox
+    Left = 8
+    Top = 64
+    Width = 241
+    Height = 17
+    Caption = #20877#35501#12415#36796#12415#26178#12395#22793#26356#12434#33258#21205#30340#12395#36865#20449'(&S)'
+    TabOrder = 4
   end
   object OKButton: TButton
-    Left = 272
-    Top = 264
+    Left = 80
+    Top = 104
     Width = 81
     Height = 25
     Caption = 'OK'
@@ -66,8 +70,8 @@ object PropForm: TPropForm
     TabOrder = 0
   end
   object CancelButton: TButton
-    Left = 360
-    Top = 264
+    Left = 168
+    Top = 104
     Width = 81
     Height = 25
     Cancel = True

@@ -3,38 +3,24 @@ Emmet LiveStyle プラグイン
 
 Copyright (c) Kuro. All Rights Reserved.
 e-mail: info@haijin-boys.com
-www:    http://www.haijin-boys.com/
+www:    https://www.haijin-boys.com/
 --------------------------------------------------------------------------------
 
 ● はじめに
 
 	▼ 概要
 
-		Emmet LiveStyle(http://livestyle.emmet.io/)をMeryで使用できるプラグインです。
-		Emmet LiveStyleの詳細はググってね。簡単に言うとCSSファイルを編集するとリアル
-		タイムでGoogleChromeなどのブラウザ上で確認できるという便利なツールです。その
-		逆も可能。Chromeの開発ツールでプロパティを変更すると即座にMeryに反映されます。
+		エディタとブラウザを同期させてスタイルシートのリアルタイム・双方向な編集
+		を可能にするアプリケーションEmmet LiveStyle(http://livestyle.io/)をMeryで
+		使用するためのプラグインです。
 
-	▼ 使い方
-
-		1. はじめにChromeのEmmet LiveStyle拡張機能を下記から入れてください。
-			https://chrome.google.com/webstore/detail/diebikgmpmeppiilkaijjbdgciafajmg
-		2. Mery上でLiveStyleプラグインを有効にしてください。
-		3. 次にChrome側で編集したいサイトを表示してF12キーを押します。
-		4. LiveStyleというタブが増えていますのでそれをクリックします。
-		5. "Enable LiveStyle for current page"のチェックボックスをクリックします。
-		6. 右端にMeryと表示されればMeryとの通信は成功。
-		7. MeryでCSSファイルを編集してみましょう、Chromeに反映されていますか？
-		8. ChromeのElementsタブでStyleを編集してみましょう、Meryに反映されていますか？
-		9. Emmet LiveStyleで高速CSSコーディングをお楽しみください。
+		Meryでスタイルシートを編集するとリアルタイムでブラウザに反映されます。
+		ブラウザのデベロッパーツールで編集した内容は即座にMeryに反映されます。
 
 ● 動作環境
 
-	Mery Build: 2.2.0.0 以降
-
-● 動作確認
-
-	Windows 7 (64ビット)
+	対応OS: Windows 10, 8, 7 (32 ビット, 64 ビット)
+	その他: Mery 2.2.0 以降 / Emmet LiveStyle 1.0.5 がインストールされている環境
 
 ● インストール
 
@@ -49,15 +35,67 @@ www:    http://www.haijin-boys.com/
 
 	レジストリは使用していませんので、解凍したファイルを削除してください。
 
-● 免責
+● 使用方法
 
-	本ソフトを使用して生じた損害等について、作者は責任は負いません。使用者の責任で
-	本ソフトを使用してください。
+	1. はじめにLiveStyleのアプリケーションを下記からインストールしてください。
+	　 http://livestyle.io/
+
+	2. LiveStyleのアプリケーションを起動したら「Install Chrome Extension」から
+	　 Chromeの拡張機能をインストールします。
+
+	3. Meryの「ツール > プラグイン > Emmet LiveStyle」でプラグインを有効にします。
+
+	4. ChromeのメニューバーのアイコンからLiveStyleを起動します。
+
+	5. "Enable LiveStyle"のスイッチをONにします。
+
+	6. Meryでスタイルシートのファイル(css, less, scss)を読み込むか、新規作成して
+	　 編集モードを「css」に設定します。
+
+	7. Chrome側のLiveStyleでスタイルシートを選択します。
+
+	8. おめでとうございます！MeryとChromeで驚きの双方向編集をお楽しみください！
+
+● 注意事項
+
+	※ LiveStyleアプリケーションはLiveStyleのサーバとして機能するものです。
+	　 LiveStyleアプリケーションを使用しない場合はMeryが代わりにサーバとして動作
+	　 します。この場合はRemoteView機能が使用できません。
+
+	※ Meryをサーバとして動作させる場合は必要に応じてWindowsのファイアウォールの
+	　 設定を行ってください。
+
+	※ 初期設定ではポート番号54000を使用します。
+
+	※ LiveStyleアプリケーションを使用せずChromeウェブストアから直接入手も可能です。
+	　 https://chrome.google.com/webstore/detail/emmet-livestyle/diebikgmpmeppiilkaijjbdgciafajmg
+
+● 仕様
+
+	Meryで開いているファイルをChromeのLiveStyleに渡すには下記の条件のどちらかを
+	満たしている必要があります。
+
+	1. ファイルの拡張子が css, less, scss のいずれか
+
+	2. 編集モードの名称が css, less, scss のいずれか
+	　 (less, scssの編集モードは必要に応じて作成してください)
+
+	既存のファイルを使用する場合は1、未保存のファイルをLiveStyleに渡す場合は2の
+	条件を見て判断しています。
+
+● 著作権等
+
+	本ソフトで使用させて頂いているライブラリ等は以下の通りです。
+
+	▼ sgcWebSockets
+
+		http://www.esegece.com/websockets/
 
 ● サポート
 
-	バグや苦情があれば電子メールや掲示板でご報告いただけると幸いです。
-	なお、本ソフトの最新版はhttp://www.haijin-boys.com/で公開しております。
+	本ソフトの最新版は https://www.haijin-boys.com/ で公開しております。
+	バグや苦情があれば開発者のブログのフォーラムでご報告いただけると幸いです。
+	書籍掲載のご依頼などは info@haijin-boys.com までご連絡ください。
 
 ● おわりに
 
@@ -66,6 +104,23 @@ www:    http://www.haijin-boys.com/
 	さっている皆様に感謝いたします。
 
 ● 更新履歴
+
+	▼ 2017/05/28 (2.3.1)
+
+		48x48サイズのアイコンを含めた。
+
+	▼ 2017/05/11 (2.3.0)
+
+		Per-Monitor DPI関連の処理を強化。
+		ツールバーのアイコンを変更。
+
+	▼ 2016/08/13 (2.0.1)
+
+		プロパティの「ポート」に3桁までしか入力できなかったのを修正。
+
+	▼ 2016/07/10 (2.0.0)
+
+		Emmet LiveStyleの正式版(1.0.5)に対応。(というか作り直しました)
 
 	▼ 2013/11/16 (1.0.0)
 

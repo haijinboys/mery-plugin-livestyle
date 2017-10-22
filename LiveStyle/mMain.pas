@@ -5,43 +5,57 @@ interface
 uses
 {$IF CompilerVersion > 22.9}
   Winapi.Windows, Winapi.Messages, System.SysUtils, System.Classes,
-  Data.DBXPlatform, Data.DBXJSON,
+  Vcl.ExtCtrls, Data.DBXPlatform, Data.DBXJSON,
 {$ELSE}
-  Windows, Messages, SysUtils, Classes, DBXPlatform, DBXJSON,
+  Windows, Messages, SysUtils, Classes, ExtCtrls, DBXPlatform, DBXJSON,
 {$IFEND}
-  IdBaseComponent, IdComponent, IdCustomTCPServer, IdCustomHTTPServer,
-  IdHTTPServer, IdContext, IdTCPConnection, IdIOHandler, IdHashSHA, IdCoderMIME,
-  mFrame, mWebSocket, mDiff;
+  D6DLLSynchronizer, mFrame, mServer, mClient, mDiff;
+
+const
+{$IF CompilerVersion > 22.9}
+  MeryVer = 3;
+{$ELSE}
+  MeryVer = 2;
+{$IFEND}
+  MaxConnAttempts = 10;
 
 type
   TMain = class(TObject)
   private
     { Private êÈåæ }
-    FPort: NativeInt;
+    FConnAttempts: Integer;
+    FRestart: TTimer;
+    FDiff: TDiff;
     FUpdateLiveStyle: Boolean;
     FWorkDoc: THandle;
     FWorkThread: THandle;
     FAbortThread: Boolean;
     FQueEvent: THandle;
     FMutex: THandle;
-    procedure ReadIni;
-    procedure WriteIni;
-    procedure IdentifyEditor(Sender: TObject; AContext: TIdContext);
-    procedure SendPatches(Sender: TObject; Doc: THandle; P: TJSONArray);
-    procedure SendUnsavedFiles(Sender: TObject; Payload: TJSONObject;
-      AContext: TIdContext);
-    function ReadFile(const FilePath: string): string;
-    procedure HandlePatchRequest(Sender: TObject; Payload: TJSONObject;
-      AContext: TIdContext);
-    procedure ApplyPatchedSource(Sender: TObject; Doc: THandle; Content: TJSONObject);
-    procedure ReplaceContent(Doc: THandle; Payload: TJSONObject);
+    procedure StartApp;
+    procedure RestartApp;
+    procedure StopApp;
+    procedure Identify;
+    procedure SendClientId;
+    procedure PatcherConnect;
+    procedure ApplyIncomingUpdates(const Data: string);
+    procedure HandlePatchRequest(const Data: string);
+    procedure RespondWithDependecyList(const Data: string);
+    procedure HandleUnsavedChangesRequest(const Data: string);
+    procedure SendUnsavedChanges(Doc: THandle);
+    procedure ReplaceContent(Doc: THandle; const Data: string);
+    // procedure PushUnsavedChanges(Doc: THandle);
+    procedure RestartTimer(Sender: TObject);
+    procedure ClientConnect(Sender: TObject);
+    procedure ClientDisconnect(Sender: TObject);
+    procedure ClientMessage(Sender: TObject; const Name, Data: string);
   public
     { Public êÈåæ }
     constructor Create;
     destructor Destroy; override;
-    procedure UpdateFiles;
-    procedure RenameFile(Doc: THandle);
-    procedure ApplyPatchOnView(Doc: THandle; Patch: TJSONArray);
+    function IsSupportedDoc(Doc: THandle; AStrict: Boolean = False): Boolean;
+    procedure RefreshLiveStyleFiles;
+    procedure SendInitialContent(Doc: THandle);
     procedure ResetThread;
     procedure LiveStyleAll(Doc: THandle);
     property UpdateLiveStyle: Boolean read FUpdateLiveStyle write FUpdateLiveStyle;
@@ -53,12 +67,13 @@ type
   end;
 
 var
+  FMain: TMain;
   FList: TFrameList;
-  FServer: TMain;
-  FSocket: TWebSocket;
-  FDiff: TDiff;
-  FViewFileNames: TStrings;
+  FPort: Integer;
   FDebug: Boolean;
+  FSendUnsavedChanges: Boolean;
+  FServer: TServer;
+  FClient: TClient;
 
 implementation
 
@@ -68,13 +83,13 @@ uses
 {$ELSE}
   IniFiles,
 {$IFEND}
-  NotePadEncoding, mCommon, mUtils, mPlugin;
+  mCommon, mUtils, mFileReader, mPlugin, mJSONHelper;
 
 function WaitMessageLoop(Count: LongWord; var Handles: THandle;
-  Milliseconds: DWORD): NativeInt;
+  Milliseconds: DWORD): Integer;
 var
   Quit: Boolean;
-  ExitCode: NativeInt;
+  ExitCode: Integer;
   WaitResult: DWORD;
   Msg: TMsg;
 begin
@@ -87,7 +102,7 @@ begin
         WM_QUIT:
           begin
             Quit := True;
-            ExitCode := NativeInt(Msg.wParam);
+            ExitCode := Integer(Msg.wParam);
             Break;
           end;
         WM_MOUSEMOVE:
@@ -102,281 +117,34 @@ begin
   until WaitResult <> WAIT_OBJECT_0 + 1;
   if Quit then
     PostQuitMessage(ExitCode);
-  Result := NativeInt(WaitResult - WAIT_OBJECT_0);
+  Result := Integer(WaitResult - WAIT_OBJECT_0);
 end;
 
 { TMain }
 
-procedure TMain.ReadIni;
-var
-  S: string;
-begin
-  if not GetIniFileName(S) then
-    Exit;
-  with TMemIniFile.Create(S, TEncoding.UTF8) do
-    try
-      FPort := ReadInteger('LiveStyle', 'Port', FPort);
-      FDebug := ReadBool('LiveStyle', 'Debug', FDebug);
-    finally
-      Free;
-    end;
-end;
-
-procedure TMain.WriteIni;
-var
-  S: string;
-begin
-  if FIniFailed or (not GetIniFileName(S)) then
-    Exit;
-  try
-    with TMemIniFile.Create(S, TEncoding.UTF8) do
-      try
-        WriteInteger('LiveStyle', 'Port', FPort);
-        WriteBool('LiveStyle', 'Debug', FDebug);
-        UpdateFile;
-      finally
-        Free;
-      end;
-  except
-    FIniFailed := True;
-  end;
-end;
-
-procedure TMain.IdentifyEditor(Sender: TObject; AContext: TIdContext);
-var
-  S: string;
-  A: TStringArray;
-  Data: TJSONObject;
-  Files: TJSONArray;
-begin
-  with TJSONObject.Create do
-    try
-      AddPair('action', 'id');
-      Data := TJSONObject.Create;
-      with Data do
-      begin
-        AddPair('id', 'Mery');
-        AddPair('title', 'Mery');
-        AddPair('icon', 'data:image/png;base64,' +
-          'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGXRFWHRTb2Z0d2FyZQBBZG9iZSBJ' +
-          'bWFnZVJlYWR5ccllPAAAAyJpVFh0WE1MOmNvbS5hZG9iZS54bXAAAAAAADw/eHBhY2tldCBiZWdp' +
-          'bj0i77u/IiBpZD0iVzVNME1wQ2VoaUh6cmVTek5UY3prYzlkIj8+IDx4OnhtcG1ldGEgeG1sbnM6' +
-          'eD0iYWRvYmU6bnM6bWV0YS8iIHg6eG1wdGs9IkFkb2JlIFhNUCBDb3JlIDUuMC1jMDYxIDY0LjE0' +
-          'MDk0OSwgMjAxMC8xMi8wNy0xMDo1NzowMSAgICAgICAgIj4gPHJkZjpSREYgeG1sbnM6cmRmPSJo' +
-          'dHRwOi8vd3d3LnczLm9yZy8xOTk5LzAyLzIyLXJkZi1zeW50YXgtbnMjIj4gPHJkZjpEZXNjcmlw' +
-          'dGlvbiByZGY6YWJvdXQ9IiIgeG1sbnM6eG1wPSJodHRwOi8vbnMuYWRvYmUuY29tL3hhcC8xLjAv' +
-          'IiB4bWxuczp4bXBNTT0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wL21tLyIgeG1sbnM6c3RS' +
-          'ZWY9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9zVHlwZS9SZXNvdXJjZVJlZiMiIHhtcDpD' +
-          'cmVhdG9yVG9vbD0iQWRvYmUgUGhvdG9zaG9wIENTNS4xIFdpbmRvd3MiIHhtcE1NOkluc3RhbmNl' +
-          'SUQ9InhtcC5paWQ6RjVBQzI1QjUxNTFGMTFFMzgyNTlFQjExMzFFM0U4QzQiIHhtcE1NOkRvY3Vt' +
-          'ZW50SUQ9InhtcC5kaWQ6RjVBQzI1QjYxNTFGMTFFMzgyNTlFQjExMzFFM0U4QzQiPiA8eG1wTU06' +
-          'RGVyaXZlZEZyb20gc3RSZWY6aW5zdGFuY2VJRD0ieG1wLmlpZDpGNUFDMjVCMzE1MUYxMUUzODI1' +
-          'OUVCMTEzMUUzRThDNCIgc3RSZWY6ZG9jdW1lbnRJRD0ieG1wLmRpZDpGNUFDMjVCNDE1MUYxMUUz' +
-          'ODI1OUVCMTEzMUUzRThDNCIvPiA8L3JkZjpEZXNjcmlwdGlvbj4gPC9yZGY6UkRGPiA8L3g6eG1w' +
-          'bWV0YT4gPD94cGFja2V0IGVuZD0iciI/PivKQJwAAAGdSURBVHjapFOve8IwEH3dh8AtsjISR+Uc' +
-          'kXPUbW7gkJ2bo7g5+BM6x1znJoubTF3dIisP1yl211J+fKwzVPQuyd177+4Sb7fb4ZqvJ7+3980Z' +
-          'CrVORZcZFRDNQk9cIe+1+08Po8b5AbYnwbS3NTDbyWx6qaD9ps8L2MId1sFAI36ZH5I7S2iZV6/z' +
-          'TubGbv8GkGA5SpIPuLJRoPoK2ldQWrPfrLHfs10lTB7HF8zWfSAlC5KDwjBgAPMYq2wd0xFAus3B' +
-          'yVoUUMOsmKlyUHcWoW9gbg2iPIL7DIVkJXxnCgQuDMdH5iKHQ4ZAyRkh27LwIgZ8Xt2nT9qPEg7N' +
-          'bk7ne9qwrGD/i2Ctg6UUaaZYHe9pzlNM10d0piCcTA/N0kEAW2roQcwgMZyooD0J95gkrkIt15Pb' +
-          '5HnexXhMlFn4oyH6OaBZeqVBli3PgBSrKNXme7k0N113nMglVOaiuW4QFaKA6bkMVfBoSwgaOgF4' +
-          'Mikoy0lGyAmoTFNHDUILBrX/llBf5TDW+2YZrn/ICBu2K/u5StvH5F37nH8FGABJ380UnNyMxgAA' +
-          'AABJRU5ErkJggg==');
-        Files := TJSONArray.Create;
-        A := GetCSSFiles;
-        for S in A do
-          Files.Add(EncodeString(S));
-        AddPair('files', Files);
-      end;
-      AddPair('data', Data);
-      FSocket.Send(ToString, AContext);
-    finally
-      Free;
-    end;
-end;
-
-procedure TMain.SendPatches(Sender: TObject; Doc: THandle; P: TJSONArray);
-var
-  Data: TJSONObject;
-begin
-  if (Doc = 0) or (P = nil) then
-    Exit;
-  with TJSONObject.Create do
-    try
-      AddPair('action', 'update');
-      Data := TJSONObject.Create;
-      with Data do
-      begin
-        AddPair('editorFile', EncodeString(GetFileName(Doc)));
-        AddPair('patch', P);
-      end;
-      AddPair('data', Data);
-      FSocket.Send(ToString);
-    finally
-      Free;
-    end;
-end;
-
-function TMain.ReadFile(const FilePath: string): string;
-var
-  Encoding: TFileEncoding;
-  E1, E2: Boolean;
-begin
-  Encoding := feNone;
-  Result := LoadFromFile(FilePath, Encoding, True, E1, E2, feUTF8);
-end;
-
-procedure TMain.SendUnsavedFiles(Sender: TObject; Payload: TJSONObject;
-  AContext: TIdContext);
-var
-  I: NativeInt;
-  Doc: THandle;
-  Files: TJSONArray;
-  Content, FileName, Pristine: string;
-  Data, Obj: TJSONObject;
-  AOut: TJSONArray;
-begin
-  Files := Payload.Get('files').JsonValue as TJSONArray;
-  AOut := TJSONArray.Create;
-  try
-    for I := 0 to Files.Size - 1 do
-    begin
-      Doc := GetDocForFile(Files.Get(I).Value);
-      if Doc = 0 then
-        Continue;
-      Content := GetContent(Doc);
-      if GetModified(Doc) then
-      begin
-        FileName := GetFileName(Doc);
-        if not FileExists2(FileName) then
-          Pristine := ''
-        else
-          Pristine := ReadFile(FileName);
-      end;
-      if Pristine <> '' then
-      begin
-        Obj := TJSONObject.Create;
-        with Obj do
-        begin
-          AddPair('file', EncodeString(Files.Get(I).Value));
-          AddPair('pristine', EncodeString(Pristine));
-          AddPair('content', EncodeString(Content));
-        end;
-        AOut.AddElement(Obj);
-      end;
-    end;
-    if AOut.Size > 0 then
-    begin
-      with TJSONObject.Create do
-        try
-          AddPair('action', 'unsavedFiles');
-          Data := TJSONObject.Create;
-          with Data do
-            AddPair('files', AOut);
-          AddPair('data', Data);
-          FSocket.Send(ToString, AContext);
-        finally
-          Free;
-        end;
-    end
-    else
-      OutputString('No unsaved changes');
-  finally
-    if Assigned(AOut) then
-      FreeAndNil(AOut);
-  end;
-end;
-
-procedure TMain.HandlePatchRequest(Sender: TObject; Payload: TJSONObject;
-  AContext: TIdContext);
-var
-  EditorFile: string;
-  Doc: THandle;
-  Patch: TJSONArray;
-begin
-  OutputString('Handle CSS patch request');
-  EditorFile := Payload.Get('editorFile').JsonValue.Value;
-  if EditorFile = '' then
-  begin
-    OutputString('No editor file in payload, skip patching');
-    Exit;
-  end;
-  Doc := GetDocForFile(EditorFile);
-  if Doc = 0 then
-  begin
-    OutputString(Format('Unable to find view for %s file', [EditorFile]));
-    if EditorFile[1] = '<' then
-      Exit;
-    Editor_LoadFile(GetView(Doc), True, PChar(EditorFile));
-  end;
-  Patch := Payload.Get('patch').JsonValue as TJSONArray;
-  if not Patch.Null then
-    ApplyPatchOnView(GetActiveDoc(GetView(Doc)), TJSONArray(Patch.Clone));
-end;
-
-procedure TMain.ApplyPatchedSource(Sender: TObject; Doc: THandle;
-  Content: TJSONObject);
-begin
-  if (Doc = 0) or Content.Null then
-    Exit;
-  ReplaceContent(Doc, Content);
-end;
-
-procedure TMain.ReplaceContent(Doc: THandle; Payload: TJSONObject);
-var
-  View: THandle;
-  P1, P2, P3: TPoint;
-  Sels: TJSONArray;
-begin
-  if Payload.Null then
-    Exit;
-  View := GetView(Doc);
-  Editor_Redraw(View, False);
-  try
-    Editor_GetSelStart(View, POS_LOGICAL, @P1);
-    Editor_GetSelEnd(View, POS_LOGICAL, @P2);
-    Editor_GetScrollPos(View, @P3);
-    Editor_Convert(View, FLAG_CONVERT_SELECT_ALL);
-    Editor_Insert(View, PChar(Payload.Get('content').JsonValue.Value));
-    Editor_SetCaretPos(View, POS_LOGICAL, @P1);
-    Editor_SetCaretPosEx(View, POS_LOGICAL, @P2, True);
-    Editor_SetScrollPos(View, @P3);
-    if not Payload.Get('selection').JsonValue.Null then
-    begin
-      Sels := Payload.Get('selection').JsonValue as TJSONArray;
-      Editor_SerialToLogical(View, StrToIntDef(Sels.Get(0).Value, 0), @P1);
-      Editor_SerialToLogical(View, StrToIntDef(Sels.Get(1).Value, 0), @P2);
-      Editor_SetCaretPos(View, POS_LOGICAL, @P1);
-      Editor_SetCaretPosEx(View, POS_LOGICAL, @P2, True);
-    end;
-  finally
-    Editor_Redraw(View, True);
-  end;
-end;
-
 constructor TMain.Create;
 begin
-  FSocket := TWebSocket.Create;
-  with FSocket do
-  begin
-    OnHandShake := IdentifyEditor;
-    OnUpdate := HandlePatchRequest;
-    OnRequestUnsavedFiles := SendUnsavedFiles;
-  end;
-  FDiff := TDiff.Create;
-  with FDiff do
-  begin
-    OnDiffComplete := SendPatches;
-    OnPatchComplete := ApplyPatchedSource;
-  end;
-  FPort := 54000;
-  FDebug := False;
   FUpdateLiveStyle := False;
   FWorkDoc := 0;
   FQueEvent := CreateEvent(nil, True, False, nil);
   FMutex := CreateMutex(nil, False, nil);
-  ReadIni;
-  FSocket.Open(FPort);
+  FConnAttempts := 0;
+  FRestart := TTimer.Create(nil);
+  with FRestart do
+  begin
+    Enabled := False;
+    Interval := 3000;
+  end;
+  FDiff := TDiff.Create;
+  FServer := TServer.Create;
+  FClient := TClient.Create;
+  with FClient do
+  begin
+    OnConnect := ClientConnect;
+    OnDisconnect := ClientDisconnect;
+    OnMessage := ClientMessage;
+  end;
+  StartApp;
 end;
 
 destructor TMain.Destroy;
@@ -392,69 +160,57 @@ begin
     CloseHandle(FMutex);
     FMutex := 0;
   end;
-  WriteIni;
+  StopApp;
+  if Assigned(FClient) then
+    FreeAndNil(FClient);
+  if Assigned(FServer) then
+    FreeAndNil(FServer);
   if Assigned(FDiff) then
     FreeAndNil(FDiff);
-  if Assigned(FSocket) then
-    FreeAndNil(FSocket);
+  if Assigned(FRestart) then
+    FreeAndNil(FRestart);
   inherited;
 end;
 
-procedure TMain.UpdateFiles;
+function TMain.IsSupportedDoc(Doc: THandle; AStrict: Boolean): Boolean;
+var
+  S: string;
+begin
+  Result := mUtils.IsSupportedDoc(Doc, AStrict, S);
+end;
+
+procedure TMain.RefreshLiveStyleFiles;
 var
   S: string;
   A: TStringArray;
-  Data: TJSONArray;
+  P: TJSONArray;
 begin
+  A := GetSupportedFiles;
+  P := TJSONArray.Create;
+  for S in A do
+    P.Add(S);
   with TJSONObject.Create do
     try
-      AddPair('action', 'updateFiles');
-      Data := TJSONArray.Create;
-      A := GetCSSFiles;
-      for S in A do
-        Data.Add(EncodeString(S));
-      AddPair('data', Data);
-      FSocket.Send(ToString);
+      AddPair('id', Format('me%d', [MeryVer]));
+      AddPair('files', P);
+      S := ToJSON;
     finally
       Free;
     end;
+  FClient.Send('editor-files', S);
 end;
 
-procedure TMain.RenameFile(Doc: THandle);
+procedure TMain.SendInitialContent(Doc: THandle);
 var
-  NewName: string;
-  Idx: NativeInt;
-  Data: TJSONObject;
+  S: string;
 begin
-  NewName := GetFileName(Doc);
-  Idx := FViewFileNames.IndexOfName(IntToStr(Doc));
-  if (Idx > -1) and (FViewFileNames.ValueFromIndex[Idx] <> NewName) then
-  begin
-    with TJSONObject.Create do
-      try
-        AddPair('action', 'renameFile');
-        Data := TJSONObject.Create;
-        with Data do
-        begin
-          AddPair('oldname', EncodeString(FViewFileNames.ValueFromIndex[Idx]));
-          AddPair('newname', EncodeString(NewName));
-        end;
-        AddPair('data', Data);
-        FSocket.Send(ToString);
-      finally
-        Free;
-      end;
-  end;
-end;
-
-procedure TMain.ApplyPatchOnView(Doc: THandle; Patch: TJSONArray);
-begin
-  if not IsCssDoc(Doc) then
-  begin
-    OutputString(Format('File %s is not CSS, aborting', [GetFileName(Doc)]));
-    Exit;
-  end;
-  FDiff.Patch(Doc, Patch);
+  with TJSONObject.ParseJSONValue(GetPayload(Doc)) as TJSONObject do
+    try
+      S := ToJSON;
+    finally
+      Free;
+    end;
+  FClient.Send('initial-content', S);
 end;
 
 procedure TMain.ResetThread;
@@ -476,13 +232,422 @@ begin
   FDiff.Diff(Doc);
 end;
 
-initialization
+procedure TMain.StartApp;
+begin
+  if FClient.Connected then
+    Exit;
+  Inc(FConnAttempts);
+  if FConnAttempts >= MaxConnAttempts then
+  begin
+    OutputString(Format('Unable to create to LiveStyle server. Make sure your firewall/proxy does not block %d port', [FPort]));
+    Exit;
+  end;
+  OutputString('Start app');
+  FClient.Connect('127.0.0.1', FPort);
+  if not FClient.Connected then
+  begin
+    OutputString('Client connection error');
+    OutputString(Format('Create own server on port %d', [FPort]));
+    FServer.Start(FPort);
+    FClient.Connect('127.0.0.1', FPort);
+  end;
+  FRestart.OnTimer := RestartTimer;
+end;
 
-FViewFileNames := TStringList.Create;
+procedure TMain.RestartApp;
+begin
+  OutputString('Requested app restart');
+  FRestart.Enabled := True;
+end;
+
+procedure TMain.StopApp;
+begin
+  FServer.Stop;
+  with FRestart do
+  begin
+    Enabled := False;
+    OnTimer := nil;
+  end;
+end;
+
+procedure TMain.Identify;
+var
+  S: string;
+begin
+  with TJSONObject.Create do
+    try
+      AddPair('id', Format('me%d', [MeryVer]));
+      AddPair('title', Format('Mery %d', [MeryVer]));
+      S := ToJSON;
+    finally
+      Free;
+    end;
+  FClient.Send('editor-connect', S);
+  RefreshLiveStyleFiles;
+end;
+
+procedure TMain.SendClientId;
+var
+  S: string;
+begin
+  with TJSONObject.Create do
+    try
+      AddPair('id', 'mery');
+      S := ToJSON;
+    finally
+      Free;
+    end;
+  FClient.Send('client-id', S);
+end;
+
+procedure TMain.PatcherConnect;
+var
+  S: string;
+  Doc: THandle;
+begin
+  Doc := GetActiveDoc(GetActiveWindow);
+  if (Doc > 0) and IsSupportedDoc(Doc, True) then
+  begin
+    with TJSONObject.ParseJSONValue(GetPayload(Doc)) as TJSONObject do
+      try
+        S := ToJSON;
+      finally
+        Free;
+      end;
+    FClient.Send('initial-content', S);
+  end;
+end;
+
+procedure TMain.ApplyIncomingUpdates(const Data: string);
+var
+  S: string;
+  P: TJSONObject;
+  Doc: THandle;
+begin
+  S := '';
+  P := TJSONObject.ParseJSONValue(Data) as TJSONObject;
+  if P <> nil then
+    try
+      if P.Get('uri') <> nil then
+        S := P.Get('uri').JsonValue.Value;
+    finally
+      P.Free;
+    end;
+  Doc := GetDocForUri(S);
+  if Doc > 0 then
+  begin
+    S := '';
+    P := TJSONObject.ParseJSONValue(Data) as TJSONObject;
+    if P <> nil then
+      try
+        if P.Get('patches') <> nil then
+          with TJSONObject.Create do
+            try
+              AddPair(P.Get('patches').Clone as TJSONPair);
+              S := ToJSON;
+            finally
+              Free;
+            end;
+      finally
+        P.Free;
+      end;
+    with TJSONObject.ParseJSONValue(GetPayload(Doc, S)) do
+      try
+        S := ToJSON;
+      finally
+        Free;
+      end;
+    FClient.Send('apply-patch', S);
+  end;
+end;
+
+procedure TMain.HandlePatchRequest(const Data: string);
+var
+  S: string;
+  P: TJSONObject;
+  Doc: THandle;
+begin
+  S := '';
+  P := TJSONObject.ParseJSONValue(Data) as TJSONObject;
+  if P <> nil then
+    try
+      if P.Get('uri') <> nil then
+        S := P.Get('uri').JsonValue.Value;
+    finally
+      P.Free;
+    end;
+  Doc := GetDocForUri(S);
+  OutputString('patch');
+  if Doc > 0 then
+    ReplaceContent(Doc, Data);
+end;
+
+procedure TMain.RespondWithDependecyList(const Data: string);
+var
+  S, T: string;
+  I: Integer;
+  A: TStringArray;
+  P: TJSONObject;
+  Q: TJSONArray;
+  R: TJSONObject;
+begin
+  if not FSendUnsavedChanges then
+    Exit;
+  T := '';
+  SetLength(A, 0);
+  P := TJSONObject.ParseJSONValue(Data) as TJSONObject;
+  if P <> nil then
+    try
+      if P.Get('files') <> nil then
+      begin
+        Q := P.Get('files').JsonValue as TJSONArray;
+        for I := 0 to Q.Size - 1 do
+        begin
+          R := Q.Get(I) as TJSONObject;
+          if R.Get('uri') <> nil then
+          begin
+            S := GetFileContents(R.Get('uri').JsonValue.Value);
+            if S <> '' then
+            begin
+              SetLength(A, Length(A) + 1);
+              A[Length(A) - 1] := S;
+            end;
+          end;
+        end;
+      end;
+      if P.Get('token') <> nil then
+        T := P.Get('token').JsonValue.Value;
+    finally
+      P.Free;
+    end;
+  Q := TJSONArray.Create;
+  for S in A do
+    Q.AddElement(TJSONObject.ParseJSONValue(S));
+  with TJSONObject.Create do
+    try
+      AddPair('token', T);
+      AddPair('files', Q);
+      S := ToJSON;
+    finally
+      Free;
+    end;
+  FClient.Send('files', S);
+end;
+
+procedure TMain.HandleUnsavedChangesRequest(const Data: string);
+var
+  S: string;
+  I: Integer;
+  A: TStringArray;
+  P: TJSONObject;
+  Q: TJSONArray;
+  Doc: THandle;
+begin
+  if not FSendUnsavedChanges then
+    Exit;
+  SetLength(A, 0);
+  P := TJSONObject.ParseJSONValue(Data) as TJSONObject;
+  if P <> nil then
+    try
+      if P.Get('files') <> nil then
+      begin
+        Q := P.Get('files').JsonValue as TJSONArray;
+        SetLength(A, Q.Size);
+        for I := 0 to Q.Size - 1 do
+          A[I] := Q.Get(I).Value;
+      end;
+    finally
+      P.Free;
+    end;
+  for S in A do
+  begin
+    Doc := GetDocForUri(S);
+    if (Doc > 0) and (IsModified(Doc)) then
+      SendUnsavedChanges(Doc);
+  end;
+end;
+
+procedure TMain.SendUnsavedChanges(Doc: THandle);
+var
+  S, T: string;
+  N: Boolean;
+begin
+  S := GetFileNameSub(Doc);
+  T := '';
+  N := True;
+  if S = '' then
+    N := False
+  else if FileExists2(S) then
+  begin
+    N := False;
+    T := ReadFile(S);
+  end;
+  if not N then
+  begin
+    S := '';
+    with TJSONObject.Create do
+      try
+        AddPair(TJSONPair.Create('previous', T));
+        S := ToJSON;
+      finally
+        Free;
+      end;
+    with TJSONObject.ParseJSONValue(GetPayload(Doc, S)) do
+      try
+        S := ToJSON;
+      finally
+        Free;
+      end;
+    FClient.Send('calculate-diff', S);
+  end;
+end;
+
+procedure TMain.ReplaceContent(Doc: THandle; const Data: string);
+var
+  H: THandle;
+  I: Integer;
+  S, T: string;
+  U: array of array [0 .. 2] of string;
+  P: TJSONObject;
+  Q, R: TJSONArray;
+  P1, P2, P3: TPoint;
+begin
+  if Data = '' then
+    Exit;
+  Lock(Doc);
+  try
+    H := GetHandle(Doc);
+    S := '';
+    T := '';
+    SetLength(U, 0);
+    P := TJSONObject.ParseJSONValue(Data) as TJSONObject;
+    if P <> nil then
+      try
+        if P.Get('ranges') <> nil then
+        begin
+          Q := P.Get('ranges').JsonValue as TJSONArray;
+          SetLength(U, Q.Size);
+          for I := 0 to Q.Size - 1 do
+          begin
+            R := Q.Get(I) as TJSONArray;
+            U[I][0] := R.Get(0).Value;
+            U[I][1] := R.Get(1).Value;
+            U[I][2] := R.Get(2).Value;
+          end;
+        end;
+        if P.Get('hash') <> nil then
+          S := P.Get('hash').JsonValue.Value;
+        if P.Get('content') <> nil then
+          T := P.Get('content').JsonValue.Value;
+      finally
+        P.Free;
+      end;
+    Editor_Info(H, MI_SET_ACTIVE_DOC, Doc);
+    if (Length(U) > 0) and (StrToInt64Def(S, 0) = GetDocHash(Doc)) then
+    begin
+      for I := 0 to Length(U) - 1 do
+      begin
+        Editor_SerialToLogical(H, StrToInt64Def(U[I][0], 0), @P1);
+        Editor_SerialToLogical(H, StrToInt64Def(U[I][1], 0), @P2);
+        Editor_SetCaretPos(H, POS_LOGICAL, @P1);
+        Editor_SetCaretPosEx(H, POS_LOGICAL, @P2, True);
+        Editor_Insert(H, PChar(U[I][2]));
+      end;
+      Editor_SerialToLogical(H, StrToInt64Def(U[Length(U) - 1][0], 0), @P1);
+      Editor_SerialToLogical(H, StrToInt64Def(U[Length(U) - 1][0], 0) + Length(U[Length(U) - 1][2]), @P2);
+      Editor_SetCaretPos(H, POS_LOGICAL, @P1);
+      Editor_SetCaretPosEx(H, POS_LOGICAL, @P2, True);
+    end
+    else if T <> '' then
+    begin
+      Editor_Redraw(H, False);
+      try
+        Editor_GetSelStart(H, POS_LOGICAL, @P1);
+        Editor_GetSelEnd(H, POS_LOGICAL, @P2);
+        Editor_GetScrollPos(H, @P3);
+        Editor_Convert(H, FLAG_CONVERT_SELECT_ALL);
+        Editor_Insert(H, PChar(T));
+        Editor_SetCaretPos(H, POS_LOGICAL, @P1);
+        Editor_SetCaretPosEx(H, POS_LOGICAL, @P2, True);
+        Editor_SetScrollPos(H, @P3);
+      finally
+        Editor_Redraw(H, True);
+      end;
+    end;
+    if IsSupportedDoc(Doc, True) then
+    begin
+      with TJSONObject.ParseJSONValue(GetPayload(Doc)) as TJSONObject do
+        try
+          S := ToJSON;
+        finally
+          Free;
+        end;
+      FClient.Send('initial-content', S);
+    end;
+  finally
+    Unlock(Doc);
+  end;
+end;
+
+(*
+ procedure TMain.PushUnsavedChanges(Doc: THandle);
+ begin
+ if IsSupportedDoc(Doc, True) then
+ SendUnsavedChanges(Doc)
+ else
+ OutputString('Current document is not a valid stylesheet');
+ end;
+*)
+
+procedure TMain.RestartTimer(Sender: TObject);
+begin
+  FRestart.Enabled := False;
+  StartApp;
+end;
+
+procedure TMain.ClientConnect(Sender: TObject);
+begin
+  OutputString('Client connected');
+  FConnAttempts := 0;
+  Identify;
+  SendClientId;
+end;
+
+procedure TMain.ClientDisconnect(Sender: TObject);
+begin
+  OutputString('Client dropped connection');
+  RestartApp;
+end;
+
+procedure TMain.ClientMessage(Sender: TObject; const Name, Data: string);
+begin
+  if Name = 'client-connect' then
+    Identify
+  else if Name = 'identify-client' then
+    SendClientId
+  else if Name = 'patcher-connect' then
+    PatcherConnect
+  else if Name = 'incoming-updates' then
+    ApplyIncomingUpdates(Data)
+  else if Name = 'patch' then
+    HandlePatchRequest(Data)
+  else if Name = 'request-files' then
+    RespondWithDependecyList(Data)
+  else if Name = 'request-unsaved-changes' then
+    HandleUnsavedChangesRequest(Data)
+  else if Name = 'diff' then
+    FDiff.HandleDiffResponse(Data)
+  else if Name = 'error' then
+    FDiff.HandleErrorResponse(Data);
+end;
+
+initialization
 
 finalization
 
-if Assigned(FViewFileNames) then
-  FreeAndNil(FViewFileNames);
+if Assigned(FClient) then
+  FreeAndNil(FClient);
+if Assigned(FServer) then
+  FreeAndNil(FServer);
 
 end.

@@ -3,7 +3,7 @@
 //
 // Copyright (c) Kuro. All Rights Reserved.
 // e-mail: info@haijin-boys.com
-// www:    http://www.haijin-boys.com/
+// www:    https://www.haijin-boys.com/
 // -----------------------------------------------------------------------------
 
 library LiveStyle;
@@ -11,30 +11,28 @@ library LiveStyle;
 {$RTTI EXPLICIT METHODS([]) FIELDS([]) PROPERTIES([])}
 {$WEAKLINKRTTI ON}
 
+{$R 'mPlugin.res' 'mPlugin.rc'}
+
 
 uses
-{$IF CompilerVersion > 22.9}
   Winapi.Windows,
   System.SysUtils,
   System.Classes,
-  Vcl.Themes,
   System.IniFiles,
-{$ELSE}
-  Windows,
-  SysUtils,
-  Classes,
-  Themes,
-  IniFiles,
-{$IFEND}
+  Vcl.Forms,
   mCommon in 'mCommon.pas',
   mMain in 'mMain.pas',
-  mProp in 'mProp.pas' {PropForm},
-  mWebSocket in 'mWebSocket.pas',
+  mClient in 'mClient.pas',
+  mServer in 'mServer.pas',
   mDiff in 'mDiff.pas',
   mUtils in 'mUtils.pas',
+  mFileReader in 'mFileReader.pas',
+  mJSONHelper in 'mJSONHelper.pas',
+  mProp in 'mProp.pas' {PropForm},
   mFrame in 'mFrame.pas',
   mLiveStyle in 'mLiveStyle.pas',
-  mPlugin in 'mPlugin.pas';
+  mPlugin in 'mPlugin.pas',
+  mPerMonitorDpi in 'mPerMonitorDpi.pas';
 
 const
   IDS_MENU_TEXT = 1;
@@ -44,75 +42,82 @@ const
 var
   FOpenStartup: Boolean;
 
+{$IFDEF DEBUG}
 {$R *.res}
+{$ENDIF}
 
 
-procedure OpenServer;
+procedure Open;
 begin
-  if FServer = nil then
+  if FMain = nil then
     try
-      FServer := TMain.Create;
+      FMain := TMain.Create;
     except
-      FreeAndNil(FServer);
+      FreeAndNil(FMain);
     end;
 end;
 
-procedure CloseServer;
+procedure Close;
 begin
-  if FServer <> nil then
-  begin
-    FServer.ResetThread;
-    FreeAndNil(FServer);
-  end;
+  if FMain <> nil then
+    FreeAndNil(FMain);
 end;
 
 procedure OnCommand(hwnd: HWND); stdcall;
 begin
-  if FServer = nil then
-    OpenServer
+  if FMain = nil then
+    Open
   else
-    CloseServer;
+    Close;
+  FOpenStartup := FMain <> nil;
 end;
 
 function QueryStatus(hwnd: HWND; pbChecked: PBOOL): BOOL; stdcall;
 var
-  Frame: TFrame;
+  LFrame: TFrame;
 begin
   Result := False;
-  Frame := FList.Find(hwnd);
-  if Frame <> nil then
-    Result := Frame.QueryStatus(hwnd, pbChecked);
+  LFrame := FList.Find(hwnd);
+  if LFrame <> nil then
+    Result := LFrame.QueryStatus(hwnd, pbChecked);
 end;
 
-function GetMenuTextID: NativeInt; stdcall;
+function GetMenuTextID: Cardinal; stdcall;
 begin
   Result := IDS_MENU_TEXT;
 end;
 
-function GetStatusMessageID: NativeInt; stdcall;
+function GetStatusMessageID: Cardinal; stdcall;
 begin
   Result := IDS_STATUS_MESSAGE;
 end;
 
-function GetIconID: NativeInt; stdcall;
+function GetIconID: Cardinal; stdcall;
 begin
   Result := IDI_ICON;
 end;
 
-procedure OnEvents(hwnd: HWND; nEvent: NativeInt; lParam: LPARAM); stdcall;
+procedure OnEvents(hwnd: HWND; nEvent: Cardinal; lParam: LPARAM); stdcall;
 var
   S: string;
-  I: NativeInt;
-  AFrame: TFrame;
+  I: Integer;
+  LFrame: TFrame;
 begin
   if (nEvent and EVENT_CREATE) <> 0 then
   begin
+    Application.Handle := HiWord(lParam);
     FList := TFrameList.Create;
     if not GetIniFileName(S) then
       Exit;
+    FPort := 54000;
+    FDebug := False;
+    FSendUnsavedChanges := True;
     with TMemIniFile.Create(S, TEncoding.UTF8) do
       try
         FOpenStartup := ReadBool('LiveStyle', 'OpenStartup', False);
+        FPort := ReadInteger('LiveStyle', 'Port', FPort);
+        FDebug := ReadBool('LiveStyle', 'Debug', FDebug);
+        FSendUnsavedChanges := ReadBool('LiveStyle', 'SendUnsavedChanges', FSendUnsavedChanges);
       finally
         Free;
       end;
@@ -123,37 +128,40 @@ begin
     begin
       if (nEvent and EVENT_CREATE_FRAME) <> 0 then
       begin
-        AFrame := TLiveStyleFrame.Create;
-        with AFrame do
+        LFrame := TLiveStyleFrame.Create;
+        with LFrame do
         begin
           Handle := hwnd;
           OnEvents(hwnd, nEvent, lParam);
         end;
-        FList.Add(AFrame);
+        FList.Add(LFrame);
         if FOpenStartup then
-          if FServer = nil then
-            OpenServer;
+          if FMain = nil then
+            Open;
       end
       else if (nEvent and EVENT_CLOSE_FRAME) <> 0 then
       begin
-        AFrame := FList.Find(hwnd);
-        if AFrame <> nil then
-          with AFrame do
+        LFrame := FList.Find(hwnd);
+        if LFrame <> nil then
+          with LFrame do
           begin
             OnEvents(hwnd, nEvent, lParam);
-            FList.Remove(AFrame);
+            FList.Remove(LFrame);
             Free;
           end;
       end
       else if (nEvent and EVENT_CLOSE) <> 0 then
       begin
-        FOpenStartup := FServer <> nil;
+        FOpenStartup := FMain <> nil;
         if FIniFailed or (not GetIniFileName(S)) then
           Exit;
         try
           with TMemIniFile.Create(S, TEncoding.UTF8) do
             try
               WriteBool('LiveStyle', 'OpenStartup', FOpenStartup);
+              WriteInteger('LiveStyle', 'Port', FPort);
+              WriteBool('LiveStyle', 'Debug', FDebug);
+              WriteBool('LiveStyle', 'SendUnsavedChanges', FSendUnsavedChanges);
               UpdateFile;
             finally
               Free;
@@ -161,25 +169,24 @@ begin
         except
           FIniFailed := True;
         end;
-        CloseServer;
+        Close;
         for I := FList.Count - 1 downto 0 do
           FList[I].Free;
         FList.Free;
-        ThemeServices.Free;
       end
       else
       begin
-        AFrame := FList.Find(hwnd);
-        if AFrame <> nil then
-          AFrame.OnEvents(hwnd, nEvent, lParam);
+        LFrame := FList.Find(hwnd);
+        if LFrame <> nil then
+          LFrame.OnEvents(hwnd, nEvent, lParam);
       end;
     end;
   end;
 end;
 
-function PluginProc(hwnd: HWND; nMsg: NativeInt; wParam: WPARAM; lParam: LPARAM): LRESULT; stdcall;
+function PluginProc(hwnd: HWND; nMsg: Cardinal; wParam: WPARAM; lParam: LPARAM): LRESULT; stdcall;
 var
-  Frame: TFrame;
+  LFrame: TFrame;
 begin
   Result := 0;
   case nMsg of
@@ -197,14 +204,14 @@ begin
       end;
   else
     begin
-      Frame := FList.Find(hwnd);
-      if Frame = nil then
+      LFrame := FList.Find(hwnd);
+      if LFrame = nil then
       begin
         hwnd := GetParent(hwnd);
-        Frame := FList.Find(hwnd);
+        LFrame := FList.Find(hwnd);
       end;
-      if Frame <> nil then
-        Result := Frame.PluginProc(hwnd, nMsg, wParam, lParam);
+      if LFrame <> nil then
+        Result := LFrame.PluginProc(hwnd, nMsg, wParam, lParam);
     end;
   end;
 end;
@@ -219,6 +226,8 @@ exports
   PluginProc;
 
 begin
+{$IFDEF DEBUG}
   ReportMemoryLeaksOnShutdown := True;
+{$ENDIF}
 
 end.

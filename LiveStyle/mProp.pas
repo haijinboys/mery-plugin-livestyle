@@ -6,16 +6,32 @@ uses
 {$IF CompilerVersion > 22.9}
   Winapi.Windows, Winapi.Messages, System.SysUtils, System.Variants,
   System.Classes, Vcl.Graphics, Vcl.Controls, Vcl.Forms, Vcl.Dialogs,
-  Vcl.StdCtrls, Vcl.ExtCtrls, Vcl.ComCtrls,
+  Vcl.StdCtrls, Vcl.ExtCtrls,
 {$ELSE}
   Windows, Messages, SysUtils, Variants, Classes, Graphics, Controls, Forms,
-  Dialogs, StdCtrls, ExtCtrls, ComCtrls,
+  Dialogs, StdCtrls, ExtCtrls,
 {$IFEND}
-  MeryCtrls, mDiff;
+  MeryCtrls, mPerMonitorDpi;
 
 type
-  TPropForm = class(TForm)
-    ListView: TListView;
+  TCenterForm = class(TScaledForm)
+  private
+    { Private éŒ¾ }
+    FWndParent: THandle;
+  protected
+    { Protected éŒ¾ }
+    procedure CreateParams(var Params: TCreateParams); override;
+    procedure DoShow; override;
+  public
+    { Public éŒ¾ }
+    constructor Create(AOwner: TComponent; AParent: THandle); reintroduce;
+  end;
+
+  TPropForm = class(TCenterForm)
+    PortLabel: TLabel;
+    PortSpinEdit: TSpinEditEx;
+    DebugCheckBox: TCheckBox;
+    SendUnsavedChangesCheckBox: TCheckBox;
     Bevel: TBevel;
     OKButton: TButton;
     CancelButton: TButton;
@@ -23,24 +39,18 @@ type
     procedure FormDestroy(Sender: TObject);
     procedure FormShow(Sender: TObject);
     procedure FormClose(Sender: TObject; var Action: TCloseAction);
-    procedure ListViewClick(Sender: TObject);
-    procedure ListViewData(Sender: TObject; Item: TListItem);
-    procedure ListViewSelectItem(Sender: TObject; Item: TListItem;
-      Selected: Boolean);
   private
     { Private éŒ¾ }
     procedure ReadIni;
-    procedure UpdateStatus;
   public
     { Public éŒ¾ }
   end;
 
-function Prop(AOwner: TComponent; var AIndex: NativeInt): Boolean;
+function Prop(AParent: THandle; var APort: Integer; var ADebug: Boolean;
+  var ASendUnsavedChanges: Boolean): Boolean;
 
 var
   PropForm: TPropForm;
-  FFontName: string;
-  FFontSize: NativeInt;
 
 implementation
 
@@ -49,46 +59,88 @@ implementation
 
 uses
 {$IF CompilerVersion > 22.9}
-  System.Math, System.IniFiles,
+  System.Math, System.IniFiles, Winapi.MultiMon,
 {$ELSE}
-  Math, IniFiles,
+  Math, IniFiles, MultiMon,
 {$IFEND}
   mCommon;
 
-function Prop(AOwner: TComponent; var AIndex: NativeInt): Boolean;
+function Prop(AParent: THandle; var APort: Integer; var ADebug: Boolean;
+  var ASendUnsavedChanges: Boolean): Boolean;
 begin
-  with TPropForm.Create(AOwner) do
+  with TPropForm.Create(nil, AParent) do
     try
-      with ListView do
-      begin
-        Items.Count := FPatches.Count;
-        if Items.Count > 0 then
-          ItemIndex := 0;
-        Refresh;
-      end;
+      PortSpinEdit.Value := APort;
+      DebugCheckBox.Checked := ADebug;
+      SendUnsavedChangesCheckBox.Checked := ASendUnsavedChanges;
       Result := ShowModal = mrOk;
       if Result then
-        AIndex := ListView.ItemIndex;
+      begin
+        APort := PortSpinEdit.Value;
+        ADebug := DebugCheckBox.Checked;
+        ASendUnsavedChanges := SendUnsavedChangesCheckBox.Checked;
+      end;
     finally
       Release;
     end;
 end;
 
+{ TCenterForm }
+
+constructor TCenterForm.Create(AOwner: TComponent; AParent: THandle);
+var
+  AppMon, WinMon: HMONITOR;
+  I, J: Integer;
+  LLeft, LTop: Integer;
+begin
+  FWndParent := AParent;
+  inherited Create(AOwner);
+  AppMon := Screen.MonitorFromWindow(GetParent(Handle), mdNearest).Handle;
+  WinMon := Monitor.Handle;
+  for I := 0 to Screen.MonitorCount - 1 do
+    if Screen.Monitors[I].Handle = AppMon then
+      if AppMon <> WinMon then
+        for J := 0 to Screen.MonitorCount - 1 do
+          if Screen.Monitors[J].Handle = WinMon then
+          begin
+            LLeft := Screen.Monitors[I].Left + Left - Screen.Monitors[J].Left;
+            if LLeft + Width > Screen.Monitors[I].Left + Screen.Monitors[I].Width then
+              LLeft := Screen.Monitors[I].Left + Screen.Monitors[I].Width - Width;
+            LTop := Screen.Monitors[I].Top + Top - Screen.Monitors[J].Top;
+            if LTop + Height > Screen.Monitors[I].Top + Screen.Monitors[I].Height then
+              LTop := Screen.Monitors[I].Top + Screen.Monitors[I].Height - Height;
+            SetBounds(LLeft, LTop, Width, Height);
+          end;
+end;
+
+procedure TCenterForm.CreateParams(var Params: TCreateParams);
+begin
+  inherited;
+  Params.WndParent := FWndParent;
+end;
+
+procedure TCenterForm.DoShow;
+var
+  H: THandle;
+  R1, R2: TRect;
+begin
+  H := GetParent(Handle);
+  if (H = 0) or IsIconic(H) then
+    H := GetDesktopWindow;
+  if GetWindowRect(H, R1) and GetWindowRect(Handle, R2) then
+    SetWindowPos(Handle, 0,
+      R1.Left + (((R1.Right - R1.Left) - (R2.Right - R2.Left)) div 2),
+      R1.Top + (((R1.Bottom - R1.Top) - (R2.Bottom - R2.Top)) div 2),
+      0, 0, SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE);
+  inherited;
+end;
+
+{ TPropForm }
+
 procedure TPropForm.FormCreate(Sender: TObject);
 begin
-  if Win32MajorVersion < 6 then
-    with Font do
-    begin
-      Name := 'Tahoma';
-      Size := 8;
-    end;
+  TScaledForm.DefaultFont.Assign(Font);
   ReadIni;
-  with Font do
-  begin
-    ChangeScale(FFontSize, Size);
-    Name := FFontName;
-    Size := FFontSize;
-  end;
 end;
 
 procedure TPropForm.FormDestroy(Sender: TObject);
@@ -106,28 +158,6 @@ begin
   //
 end;
 
-procedure TPropForm.ListViewClick(Sender: TObject);
-begin
-  UpdateStatus;
-end;
-
-procedure TPropForm.ListViewData(Sender: TObject; Item: TListItem);
-begin
-  if InRange(Item.Index, 0, FPatches.Count - 1) then
-  begin
-    Item.Caption := FPatches[Item.Index].FileName;
-    Item.SubItems.Add(FPatches[Item.Index].Selectors);
-    Item.SubItems.Add(FPatches[Item.Index].Name);
-  end;
-end;
-
-procedure TPropForm.ListViewSelectItem(Sender: TObject; Item: TListItem;
-  Selected: Boolean);
-begin
-  if Selected then
-    UpdateStatus;
-end;
-
 procedure TPropForm.ReadIni;
 var
   S: string;
@@ -136,17 +166,17 @@ begin
     Exit;
   with TMemIniFile.Create(S, TEncoding.UTF8) do
     try
-      FFontName := ReadString('MainForm', 'FontName', Font.Name);
-      FFontSize := ReadInteger('MainForm', 'FontSize', Font.Size);
+      with TScaledForm.DefaultFont do
+        if ValueExists('MainForm', 'FontName') then
+        begin
+          Name := ReadString('MainForm', 'FontName', Name);
+          Size := ReadInteger('MainForm', 'FontSize', Size);
+        end
+        else if CheckWin32Version(6, 2) then
+          Assign(Screen.IconFont);
     finally
       Free;
     end;
-end;
-
-procedure TPropForm.UpdateStatus;
-begin
-  with ListView do
-    OKButton.Enabled := (Items.Count > 0) and (ItemIndex >= 0);
 end;
 
 end.
