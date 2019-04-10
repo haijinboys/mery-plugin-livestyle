@@ -12,11 +12,7 @@ uses
   D6DLLSynchronizer, mFrame, mServer, mClient, mDiff;
 
 const
-{$IF CompilerVersion > 22.9}
-  MeryVer = 3;
-{$ELSE}
   MeryVer = 2;
-{$IFEND}
   MaxConnAttempts = 10;
 
 type

@@ -105,7 +105,7 @@ var
 begin
   if (nEvent and EVENT_CREATE) <> 0 then
   begin
-    Application.Handle := HiWord(lParam);
+    Application.Handle := hwnd;
     FList := TFrameList.Create;
     if not GetIniFileName(S) then
       Exit;
